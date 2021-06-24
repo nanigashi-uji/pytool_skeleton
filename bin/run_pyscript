@@ -1,0 +1,99 @@
+#!/bin/bash
+this="$(which "${BASH_SOURCE:-${0}}")"
+runas="$(basename "${this}")"
+#
+script_subdir="lib/python"
+module_subdir="site-packages"
+module_manage_name="mng_pymodule"
+#
+python_default='python'
+#
+# Assuming GNU realpath (coreutils) is installed as "grealpath" in OSX.
+#
+if which -s "realpath" ; then
+    _realpathcmd="realpath"
+elif which -s "grealpath" ; then
+    _realpathcmd="grealpath"
+fi
+if [ \! -z "${_realpathcmd}" ]; then
+    rp_this="$("${_realpathcmd}" "${this}")"
+    [ -L "${this}" -a "x${rp_this##*/}" != "x${runas}" ] && flgslnk=1
+else
+    rp_this="$("${PYTHON:-"$(which ${python_default:-python})"}" -c "import os.path;print(os.path.realpath('${this}'))")"
+    [ -L "${this}" -a "x${rp_this##*/}" != "x${runas}" ] && flgslnk=1
+fi
+
+bin_dir="$(dirname "${rp_this}")"
+if [ "${bin_dir:-.}" == "." ]; then
+    bin_dir="${PWD}"
+fi
+
+tool_root="$(dirname ${bin_dir})"
+script_dir="${tool_root}/${script_subdir}"
+module_path="${script_dir}/${module_subdir}"
+
+if [ "${runas}" == "${module_manage_name}" ]; then 
+    python_version=($("${PYTHON:-"$(which ${python_default:-python})"}" --version 2>&1)) \
+        || exec echo "Can not determine python version" 1>&2
+    python_version="${python_version[1]}"
+    pip_default="pip${python_version%%.*}"
+
+    if [ $# -gt 0 ]; then
+        case "${1}" in
+            install)
+                pipcmd="${1}"
+                pipopt="--target ${module_path}"
+                shift
+                ;;
+            download)
+                pipcmd="${1}"
+                pipopt="--dest ${module_path}"
+                shift
+                ;;
+            distclean|cleanall|allclean)
+                shift
+                exec rm -rf "${@}" ${module_path}/*
+                ;;
+            uninstall|freeze|list|show|check|config|search|cache|wheel|hash|completion|debug|help)
+                exec echo "Unsupported PIP subcommand: ${1}: Use pip directory" 1>&2
+                ;;
+            *)
+                pipcmd="install"
+                pipopt="--target ${module_path}"
+                ;;
+        esac
+        if [ ! -d "${module_path}" ]; then
+            mkdir -p "${module_path}"
+        fi
+        exec env "${PIP:-"$(which ${pip_default})"}" ${pipcmd} ${pipopt} "${@}"
+    else
+        echo "[Usage] % ${runas}" "[arguments for pip]" 1>&2
+    fi
+else
+    if [ ${flgslnk:-0} -ne 0 ]; then
+        for script in "$(basename "${this%.py}").py" "$(basename "${this}")" ; do
+            script_path="${script_dir}/${script}"
+            if [ -f "${script_path}" ]; then
+                break
+            fi
+        done
+    elif [ $# -gt 0 ]; then
+        script="$(basename ${1%.py}).py"
+        shift
+        if [ -f "${script}" ]; then
+            script_path="${script}"
+        else
+            script_path="${script_dir}/${script}"
+        fi
+    else
+        echo "[Usage] % ${runas} python_script [arguments ... ]" 1>&2 
+    fi
+
+    if [ -f "${script_path}" ]; then
+        exec env PATH="${script_dir}:${module_path}/bin:${bin_dir}:${PATH}" \
+            PYTHONPATH="${script_dir}:${module_path}:${PYTHONPATH}" \
+            ${PYTHON:-${python_default:-python}} "${script_path}" "${@}"
+    else
+        echo "Error: No script found." 1>&2 
+    fi
+fi
