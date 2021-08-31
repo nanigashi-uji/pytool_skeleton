@@ -2,19 +2,25 @@
 this="$(which "${BASH_SOURCE:-${0}}")"
 runas="$(basename "${this}")"
 #
+# Default Python version.
+#
+#python_major_version_default=2
+python_major_version_default=3
+#
 script_subdir="lib/python"
 module_subdir="site-packages"
 module_manage_name="mng_pymodule"
 #
 python_default='python'
 #
-# Assuming GNU realpath (coreutils) is installed as "grealpath" in OSX.
+# Assuming GNU realpath (coreutils) is installed as "grealpath" in OSX (by macports, etc).
 #
 if which -s "realpath" ; then
     _realpathcmd="realpath"
 elif which -s "grealpath" ; then
     _realpathcmd="grealpath"
 fi
+
 if [ \! -z "${_realpathcmd}" ]; then
     rp_this="$("${_realpathcmd}" "${this}")"
     [ -L "${this}" -a "x${rp_this##*/}" != "x${runas}" ] && flgslnk=1
@@ -32,68 +38,124 @@ tool_root="$(dirname ${bin_dir})"
 script_dir="${tool_root}/${script_subdir}"
 module_path="${script_dir}/${module_subdir}"
 
-if [ "${runas}" == "${module_manage_name}" ]; then 
-    python_version=($("${PYTHON:-"$(which ${python_default:-python})"}" --version 2>&1)) \
-        || exec echo "Can not determine python version" 1>&2
-    python_version="${python_version[1]}"
-    pip_default="pip${python_version%%.*}"
+if [ "${runas%[23]}" == "${module_manage_name}" ]; then 
+    if [ "${runas}" == "${module_manage_name}3" ]; then 
+        py_mjrver=3
+    elif [ "${runas}" == "${module_manage_name}2" ]; then
+        py_mjrver=2
+    else
+        py_mjrver=${python_major_version_default:-3}
+    fi
+
+    if [ -n "${py_mjrver}" ] && which -s "${PIP:-pip${py_mjrver}}" ; then
+        pip_path="$(which "${PIP:-pip${py_mjrver}}")"
+        pip_pyver="$("${pip_path}" -V)"
+        pip_pyver="${pip_pyver#*(python }"
+        pip_pyver="${pip_pyver%)}"
+    elif which -s "${PIP:-pip}" ; then
+        pip_path="$(which "${PIP:-pip}")"
+        pip_pyver="$("${pip_path}" -V)"
+        pip_pyver="${pip_pyver#*(python }"
+        pip_pyver="${pip_pyver%)}"
+    else
+        pip_path=""
+    fi
 
     if [ $# -gt 0 ]; then
         case "${1}" in
             install)
                 pipcmd="${1}"
-                pipopt="--target ${module_path}"
+                pipopt="--target ${module_path%/}/${pip_pyver}"
                 shift
                 ;;
             download)
                 pipcmd="${1}"
-                pipopt="--dest ${module_path}"
+                pipopt="--dest ${module_path%/}/${pip_pyver}"
                 shift
                 ;;
             distclean|cleanall|allclean)
                 shift
                 exec rm -rf "${@}" ${module_path}/*
                 ;;
+            clean)
+                shift
+                exec rm -rf "${@}" "${module_path%/}/${pip_pyver%/}"
+                ;;
             uninstall|freeze|list|show|check|config|search|cache|wheel|hash|completion|debug|help)
                 exec echo "Unsupported PIP subcommand: ${1}: Use pip directory" 1>&2
                 ;;
             *)
                 pipcmd="install"
-                pipopt="--target ${module_path}"
+                pipopt="--target ${module_path%/}/${pip_pyver}"
                 ;;
         esac
-        if [ ! -d "${module_path}" ]; then
-            mkdir -p "${module_path}"
+        if [ -z "${pip_path}" ]; then
+            exec echo "Proper pip command is not found" 1>&2
         fi
-        exec env "${PIP:-"$(which ${pip_default})"}" ${pipcmd} ${pipopt} "${@}"
+        if [ ${py_mjrver} -ne ${pip_pyver%%.*} ] ; then
+            echo "Warning: PIP Python version (${pip_pyver}) mismatch?  (Version ${py_mjrver} is expexted by ${runas})"
+        fi
+        if [ ! -d "${module_path%/}/${pip_pyver}" ]; then
+            mkdir -p "${module_path%/}/${pip_pyver}"
+        fi
+        exec env "${pip_path}" ${pipcmd} ${pipopt} "${@}"
     else
         echo "[Usage] % ${runas}" "[arguments for pip]" 1>&2
     fi
 else
+    script_path=
     if [ ${flgslnk:-0} -ne 0 ]; then
         for script in "$(basename "${this%.py}").py" "$(basename "${this}")" ; do
             script_path="${script_dir}/${script}"
             if [ -f "${script_path}" ]; then
                 break
             fi
+            script_path=
         done
     elif [ $# -gt 0 ]; then
         script="$(basename ${1%.py}).py"
         shift
         if [ -f "${script}" ]; then
             script_path="${script}"
-        else
+        elif [ -f "${script_dir}/${script}" ]; then
             script_path="${script_dir}/${script}"
         fi
     else
         echo "[Usage] % ${runas} python_script [arguments ... ]" 1>&2 
     fi
 
-    if [ -f "${script_path}" ]; then
-        exec env PATH="${script_dir}:${module_path}/bin:${bin_dir}:${PATH}" \
-            PYTHONPATH="${script_dir}:${module_path}:${PYTHONPATH}" \
-            ${PYTHON:-${python_default:-python}} "${script_path}" "${@}"
-    else
-        echo "Error: No script found." 1>&2 
+    if [ -z "${script_path}" ]; then
+        echo "Error: File not found. (${script} in ${script_dir})" 1>&2 
     fi
+    
+    py_script=$("${SED:-sed}" -nE -e '1 {/^#\!/ s/^#\!((\/usr)?(\/bin\/)?env  *)?((.*)python(-?([0-9\.][0-9\.]*))?)(  *[^ ].*)?$/\4/gp;};q' "${script_path}")
+    py_scrver=$("${SED:-sed}" -nE -e '1 {/^#\!/ s/^#\!((\/usr)?(\/bin\/)?env  *)?((.*)python(-?([0-9\.][0-9\.]*))?)(  *[^ ].*)?$/\7/gp;};q' "${script_path}")
+
+    if [ -z "${py_scrver}" ] ; then
+        py_mjrver=${python_major_version_default:-3}
+    elif [ "${py_scrver%%.*}" -eq 3 ]; then 
+        py_mjrver=3
+    elif [ "${py_scrver%%.*}" -eq 2 ]; then 
+        py_mjrver=2
+    else
+        py_mjrver=${python_major_version_default:-3}
+    fi
+
+    if [ -n "${py_mjrver}" ] && which -s "${PYTHON:-${py_script:-python${py_mjrver}}}" ; then
+        python_path="$(which "${PYTHON:-${py_script:-python${py_mjrver}}}")"
+        python_pyver="$("${python_path}" -c "import sys;print('%d.%d' % sys.version_info[0:2])")"
+    elif which -s "${PYTHON:-${py_script:-python}}" ; then
+        python_path="$(which "${PYTHON:-${py_script:-python}}")"
+        python_pyver="$("${python_path}" -c "import sys;print('%d.%d' % sys.version_info[0:2])")"
+    else
+        exec echo "Can not find ${PYTHON:-${py_script:-python${py_mjrver}}} installed"
+    fi
+
+    if [ -n "${py_scrver}" ] && [ "${py_scrver%%.*}" -ne "${python_pyver%%.*}" ]; then
+        echo "Warning: Python version (${python_pyver}) mismatch?  (Version ${py_scrver%%.*}) is expexted by ${script_path})" 2>&1 
+    fi
+
+    exec env PATH="${script_dir%/}/${python_pyver}:${script_dir%/}:${module_path%/}/${python_pyver}/bin:${bin_dir}:${PATH}" \
+             PYTHONPATH="${script_dir%/}/${python_pyver}:${script_dir%/}:${module_path%/}/${python_pyver}:${PYTHONPATH}" \
+             "${python_path}" "${script_path}" "${@}"
 fi
